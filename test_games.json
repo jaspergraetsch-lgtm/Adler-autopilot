@@ -1,0 +1,6 @@
+[
+  {"id": "2627ESHBKRERWC0502", "home": "ECKERNFÖRDER MTV", "away": "FT ADLER KIEL", "start": "2026-10-31T17:00",
+   "hall": "Wulfsteerthalle", "status": "upcoming", "goals_home": null, "goals_away": null, "halftime": null},
+  {"id": "TESTSPIEL", "home": "FT ADLER KIEL", "away": "ECKERNFÖRDER MTV", "start": "2026-10-27T17:00",
+   "hall": "Testhalle", "status": "finished", "goals_home": 25, "goals_away": 22, "halftime": "12:11"}
+]
