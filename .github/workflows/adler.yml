@@ -40,3 +40,10 @@ jobs:
             if [ "${{ inputs.plan_season }}" = "true" ]; then args="$args --plan-season"; fi
           fi
           python bot.py $args
+      - name: Vorschau-Grafiken hochladen
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vorschau
+          path: out/
+          if-no-files-found: ignore

@@ -14,6 +14,11 @@ Läuft kostenlos in GitHub Actions: liest handball.net, baut die Sharepics, schr
 ## Einstellungen (optional, als Repo-Variablen/Env im Workflow)
 `DESIGN` = dunkel | hell | linien · `HASHTAGS` · `BUFFER_CHANNEL` · `HANDBALL_URLS` (neue Saison: season_id anpassen)
 
+## Spielplan-Quelle
+Der Bot liest den Team-Kalender von handball.net (`HANDBALL_ICS`, im Workflow gesetzt; die Adresse steht unter „Termin abonnieren“, `webcal://` = `https://`). Daraus kommen alle Spiele der Saison mit Spielnummer, Halle und Ergebnis. Nur wenn der Feed nicht ladbar ist, liest Claude die Teamseiten als Rückfall. Hinweis: Der Feed kann Ergebnisse etwas verzögert liefern.
+
+Läufe mit „Nur testen“ legen die erzeugten Grafiken als Download **vorschau** an den Lauf (Actions → Lauf → Artifacts).
+
 ## Hinweise
 - Ankündigung: ab 3 Tage vor Anpfiff (ab 12 Uhr). Ergebnis: sobald der Endstand auf handball.net steht.
 - Doppelposts verhindert `state.json`.

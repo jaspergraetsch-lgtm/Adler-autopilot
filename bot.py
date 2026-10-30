@@ -100,6 +100,56 @@ def fetch_sources():
     return "\n\n".join(texts), crests
 
 
+def parse_ics(text):
+    """Team-Kalender (.ics) von handball.net -> Spieleliste im Format von extract_games()."""
+    text = re.sub(r"\r?\n[ \t]", "", text)                      # gefaltete Zeilen zusammensetzen
+    unesc = lambda v: v.replace("\\n", "\n").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\")
+    games = []
+    for block in re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", text, re.S):
+        f = {}
+        for line in block.strip().splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                f[k.split(";")[0].upper()] = v
+        m = re.match(r"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})", f.get("DTSTART", ""))
+        summary = unesc(f.get("SUMMARY", "")).strip()
+        score = re.search(r"\s*\((\d+):(\d+)\)$", summary)
+        teams = re.split(r"\s+-\s+", summary[:score.start()] if score else summary)
+        if not m or len(teams) != 2:
+            log(f"WARN: Kalendertermin nicht lesbar: {summary!r}")
+            continue
+        desc = unesc(f.get("DESCRIPTION", ""))
+        nr = re.search(r"Spielnummer\s+(\w+)", desc)
+        hall = unesc(f.get("LOCATION", "")).split(",")[0].strip()
+        finished = bool(score) or "finalizado" in desc.lower() or "beendet" in desc.lower()
+        games.append({
+            "id": nr.group(1) if nr else f.get("UID"),
+            "home": teams[0].strip(), "away": teams[1].strip(),
+            "start": f"{m[1]}-{m[2]}-{m[3]}T{m[4]}:{m[5]}",
+            "hall": hall or None,
+            "status": "finished" if finished else "upcoming",
+            "goals_home": int(score[1]) if score else None,
+            "goals_away": int(score[2]) if score else None,
+            "halftime": None,
+        })
+    return games
+
+
+def fetch_ics():
+    """Spiele aus HANDBALL_ICS laden; None, wenn nicht konfiguriert oder nicht ladbar."""
+    url = os.getenv("HANDBALL_ICS", "").replace("webcal://", "https://")
+    if not url:
+        return None
+    try:
+        r = requests.get(url, headers=UA, timeout=30)
+        r.raise_for_status()
+        games = parse_ics(r.text)
+    except Exception as e:
+        log(f"WARN: Kalender-Feed nicht ladbar ({e}) – weiche auf die Webseiten aus")
+        return None
+    return games or None
+
+
 def claude(system, user, max_tokens=1500):
     key = os.getenv("ANTHROPIC_API_KEY")
     if not key:
@@ -286,19 +336,14 @@ def main():
     if a.fixture:
         games = json.loads(Path(a.fixture).read_text())
     else:
-        text, crest_map = fetch_sources()
-        if not text.strip():
+        text, crest_map = fetch_sources()             # Webseiten: Wappen-URLs (und Rückfall für die Spiele)
+        games = fetch_ics()
+        if games is None and not text.strip():
             sys.exit("Keine Seite ladbar – Abbruch (nichts gepostet).")
-        if a.dry_run and os.getenv("HANDBALL_ICS"):      # Diagnose: Rohformat des Kalender-Feeds
-            try:
-                ics = requests.get(os.environ["HANDBALL_ICS"].replace("webcal://", "https://"), headers=UA, timeout=30)
-                log(f"--- ICS {ics.status_code}, {len(ics.text)} Zeichen, {ics.text.count('BEGIN:VEVENT')} Termine ---\n"
-                    + ics.text[:5000] + "\n---------------------------")
-            except Exception as e:
-                log(f"WARN: ICS nicht ladbar: {e}")
-        if a.dry_run:
-            log("--- Quelltext (gekürzt) ---\n" + text[:6000] + "\n---------------------------")
-        games = extract_games(text, now)
+        if games is None:
+            games = extract_games(text, now)
+        else:
+            log("Spiele aus dem Kalender-Feed gelesen")
     log(f"{len(games)} Spiel(e) erkannt")
     if a.dry_run:
         (OUT_DIR / "games.json").write_text(json.dumps(games, indent=2, ensure_ascii=False))
