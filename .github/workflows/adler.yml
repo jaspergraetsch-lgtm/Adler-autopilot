@@ -9,6 +9,10 @@ on:
         description: "Nur testen (nichts posten)"
         type: boolean
         default: true
+      plan_season:
+        description: "Saison planen: alle offenen Ankündigungen in Buffer einplanen"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -29,8 +33,9 @@ jobs:
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
-            python bot.py --dry-run
-          else
-            python bot.py
+          args=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.dry_run }}" = "true" ]; then args="$args --dry-run"; fi
+            if [ "${{ inputs.plan_season }}" = "true" ]; then args="$args --plan-season"; fi
           fi
+          python bot.py $args

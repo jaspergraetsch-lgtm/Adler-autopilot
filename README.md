@@ -8,6 +8,7 @@ Läuft kostenlos in GitHub Actions: liest handball.net, baut die Sharepics, schr
    - `BUFFER_API_KEY` (Buffer: publish.buffer.com/settings/api → Generate API key)
    - `ANTHROPIC_API_KEY` (console.anthropic.com → API keys; Kosten ca. wenige Cent pro Monat)
 3. Actions-Tab → „Adler Autopilot“ → **Run workflow** (Haken „Nur testen“ lassen). Im Log siehst du erkannte Spiele, Captions, Bilder.
+   **Saison vorab planen:** Run workflow mit Haken „Saison planen“ (zuerst mit „Nur testen“, dann ohne) plant alle offenen Ankündigungen mit Datum in Buffer ein, standardmäßig 3 Tage vor dem Spiel um 12 Uhr (`ANNOUNCE_DAYS`, `ANNOUNCE_HOUR`). Du siehst und änderst sie im Buffer-Kalender. Der stündliche Lauf postet dann nur noch Ergebnisse (und Ankündigungen für später neu angesetzte Spiele) und markiert den Lauf als fehlgeschlagen – GitHub schickt dir dann eine Mail –, wenn sich Uhrzeit oder Halle eines geplanten Spiels geändert haben; den Buffer-Post musst du dann dort anpassen.
 4. Passt alles: noch einmal ausführen mit **entferntem** Haken. Ab dann läuft es stündlich von allein.
 
 ## Einstellungen (optional, als Repo-Variablen/Env im Workflow)

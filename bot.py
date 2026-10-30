@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -44,6 +45,8 @@ SOURCES = [u.strip() for u in os.getenv(
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 CHANNEL_HINT = os.getenv("BUFFER_CHANNEL", "adlerhandballmaedels").lower()
 HASHTAGS = os.getenv("HASHTAGS", "#handball #ftadlerkiel #kiel #handballdamen")
+ANNOUNCE_DAYS = int(os.getenv("ANNOUNCE_DAYS", 3))                 # Ankündigung so viele Tage vor dem Spiel ...
+ANNOUNCE_HOUR = int(os.getenv("ANNOUNCE_HOUR", 12))                # ... um diese Uhrzeit (Europe/Berlin)
 UA = {"User-Agent": "Mozilla/5.0 (compatible; AdlerAutopilot/1.0)"}
 
 
@@ -53,9 +56,11 @@ def log(*a):
 
 
 def load_state():
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text())
-    return {"announced": [], "reported": []}
+    st = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    st.setdefault("announced", [])
+    st.setdefault("reported", [])
+    st.setdefault("planned", {})       # vorab in Buffer eingeplante Ankündigungen: gid -> Termin/Halle/Post-ID
+    return st
 
 
 def save_state(st):
@@ -225,8 +230,8 @@ def build_post_mutation(channel_id, text, image_url, alt, due_utc):
 }}"""
 
 
-def create_post(channel_id, text, image_url, alt):
-    due = datetime.now(timezone.utc) + timedelta(minutes=5)
+def create_post(channel_id, text, image_url, alt, due=None):
+    due = due or datetime.now(timezone.utc) + timedelta(minutes=5)
     res = gql(build_post_mutation(channel_id, text, image_url, alt, due))["createPost"]
     if "post" not in res:
         raise RuntimeError(f"Buffer lehnt ab: {res.get('message')}")
@@ -254,12 +259,22 @@ def host_image(path):
     raise RuntimeError(f"Bild-URL nicht erreichbar: {url} (Repo muss öffentlich sein)")
 
 
+def commit_state(st, label):
+    save_state(st)
+    subprocess.run(["git", "add", "state.json"], cwd=BASE, check=True)
+    subprocess.run(["git", "commit", "-m", label], cwd=BASE, check=False)
+    subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=BASE, check=False)
+    subprocess.run(["git", "push"], cwd=BASE, check=False)
+
+
 # --------------------------------------------------------------------------- Hauptlogik
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--fixture", help="JSON-Datei mit Spielen statt Handball.net (Test)")
     ap.add_argument("--now", help="Zeitpunkt simulieren, z. B. 2026-10-29T13:00")
+    ap.add_argument("--plan-season", action="store_true",
+                    help="alle offenen Ankündigungen vorab in Buffer einplanen (statt Ergebnisse/fällige Posts)")
     a = ap.parse_args()
 
     now = datetime.fromisoformat(a.now).replace(tzinfo=TZ) if a.now else datetime.now(TZ)
@@ -281,15 +296,28 @@ def main():
 
     channel = None
     todo = []
+    alerts = []
     for g in games:
         if not g.get("start") or not g.get("home") or not g.get("away"):
             continue
         start = datetime.fromisoformat(g["start"]).replace(tzinfo=TZ)
         gid = g.get("id") or f"{g['start']}-{slug(g['home'])}-{slug(g['away'])}"
         days_to = (start.date() - now.date()).days
+        planned = st["planned"].get(gid)
 
+        if planned and g.get("status") == "upcoming" and start > now:      # Termin/Halle seit der Planung geändert?
+            seen = [g["start"], g.get("hall") or ""]
+            if seen != [planned["start"], planned.get("hall") or ""] and planned.get("alerted") != seen:
+                alerts.append(f"{nice(g['home'])} – {nice(g['away'])}: geplant {planned['start']} / {planned.get('hall') or '-'}, "
+                              f"jetzt {seen[0]} / {seen[1] or '-'} – Buffer-Post {planned['post_id']} bitte prüfen/anpassen")
+                planned["alerted"] = seen
+
+        if a.plan_season:
+            if g.get("status") == "upcoming" and start > now and gid not in st["announced"] and not planned:
+                todo.append(("ankuendigung", gid, g, start))
+            continue
         if (g.get("status") == "upcoming" and start > now and days_to <= 3
-                and (days_to < 3 or now.hour >= 12) and gid not in st["announced"]):
+                and (days_to < 3 or now.hour >= 12) and gid not in st["announced"] and not planned):
             todo.append(("ankuendigung", gid, g, start))
         if (g.get("status") == "finished" and g.get("goals_home") is not None and g.get("goals_away") is not None
                 and timedelta(0) < now - start < timedelta(days=3) and gid not in st["reported"]):
@@ -316,24 +344,38 @@ def main():
             alt = f"Ergebnis: {nice(g['home'])} {g['goals_home']}:{g['goals_away']} {nice(g['away'])}"
         log(f"[{kind}] {gid}: Bild {path.name}")
 
+        due = None                                    # None = sofort (in 5 Minuten)
+        if a.plan_season:
+            due = datetime.combine(start.date() - timedelta(days=ANNOUNCE_DAYS), dtime(ANNOUNCE_HOUR), TZ)
+            due = (due if due > now + timedelta(minutes=5) else now + timedelta(minutes=5)).astimezone(timezone.utc)
+
         if a.dry_run:
             payload = build_post_mutation("CHANNEL_ID", caption, f"https://raw.githubusercontent.com/OWNER/REPO/main/posts/{fname}",
-                                          alt, now.astimezone(timezone.utc) + timedelta(minutes=5))
+                                          alt, due or now.astimezone(timezone.utc) + timedelta(minutes=5))
             (OUT_DIR / f"{path.stem}.caption.txt").write_text(caption)
             (OUT_DIR / f"{path.stem}.mutation.graphql").write_text(payload)
             log("  --- Caption ---\n" + caption + "\n  ---------------")
+            if due:
+                log(f"  Veröffentlichung geplant: {due.astimezone(TZ).strftime('%a %d.%m.%Y %H:%M')} Uhr")
             continue
 
         channel = channel or find_channel()
         url = host_image(path)
-        post_id = create_post(channel, caption, url, alt)
-        log(f"  -> Buffer-Post {post_id}")
-        st["announced" if kind == "ankuendigung" else "reported"].append(gid)
-        save_state(st)
-        subprocess.run(["git", "add", "state.json"], cwd=BASE, check=True)
-        subprocess.run(["git", "commit", "-m", f"State {kind} {gid}"], cwd=BASE, check=False)
-        subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=BASE, check=False)
-        subprocess.run(["git", "push"], cwd=BASE, check=False)
+        post_id = create_post(channel, caption, url, alt, due)
+        log(f"  -> Buffer-Post {post_id}" + (f" für {due.astimezone(TZ).strftime('%d.%m.%Y %H:%M')} Uhr geplant" if due else ""))
+        if a.plan_season:
+            st["planned"][gid] = {"post_id": post_id, "start": g["start"], "hall": g.get("hall") or "",
+                                  "due": due.isoformat()}
+        else:
+            st["announced" if kind == "ankuendigung" else "reported"].append(gid)
+        commit_state(st, f"State {kind} {gid}")
+
+    for msg in alerts:
+        log("ACHTUNG Spielverlegung: " + msg)
+    if alerts and not a.dry_run:
+        commit_state(st, "State: Verlegung gemeldet")
+        sys.exit("Spieltermin/Halle hat sich geändert (siehe oben) – Lauf bewusst als fehlgeschlagen markiert, "
+                 "damit GitHub eine Benachrichtigung schickt.")
 
 
 if __name__ == "__main__":
