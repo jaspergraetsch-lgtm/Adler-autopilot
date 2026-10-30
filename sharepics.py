@@ -176,6 +176,24 @@ LOCAL_FALLBACKS = {"ft adler kiel": BASE / "shield.png",
                    "eckernförder mtv": BASE / "eckernfoerde.png"}
 
 
+def strip_dark_edges(im, max_frac=0.03):
+    """Schmale dunkle Randstreifen (Fehler im Quellbild) abschneiden, solange eine Außenzeile/-spalte fast ganz dunkel ist."""
+    im = im.convert("RGBA")
+    lim = max(1, int(max_frac * max(im.size)))
+    def dark(box):
+        px = [p for p in im.crop(box).getdata() if p[3] > 128]
+        n = (box[2] - box[0]) * (box[3] - box[1])
+        return len(px) > 0.8 * n and sum((p[0] * 299 + p[1] * 587 + p[2] * 114) // 1000 for p in px) / len(px) < 50
+    l, t, r, b = 0, 0, im.width, im.height
+    for _ in range(lim):
+        if r - l > 2 and dark((l, t, l + 1, b)): l += 1
+        elif r - l > 2 and dark((r - 1, t, r, b)): r -= 1
+        elif b - t > 2 and dark((l, t, r, t + 1)): t += 1
+        elif b - t > 2 and dark((l, b - 1, r, b)): b -= 1
+        else: break
+    return im.crop((l, t, r, b)) if (l, t, r, b) != (0, 0, im.width, im.height) else im
+
+
 def clean_background(im, name=""):
     """Wappen ohne echte Transparenz: einfarbigen Rand (schwarz, grau, weiß) ab den Ecken transparent machen."""
     im = im.convert("RGBA")

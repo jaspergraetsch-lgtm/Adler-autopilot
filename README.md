@@ -19,6 +19,13 @@ Der Bot liest den Team-Kalender von handball.net (`HANDBALL_ICS`, im Workflow ge
 
 Läufe mit „Nur testen“ legen die erzeugten Grafiken als Download **vorschau** an den Lauf (Actions → Lauf → Artifacts).
 
+## Ergebnis-Generator (Handy-Seite)
+Ordner `docs/` – eine eigenständige Seite, mit der Spielerinnen direkt nach dem Spiel die Schlussspielstand-Grafik (roter Hintergrund, Feed 4:5 oder Story 9:16) erstellen: Gegner im Dropdown wählen (alle Gegner der Saison, mit Wappen), Tore einstellen, „Speichern / Teilen“.
+- **Veröffentlichen:** Repo → Settings → Pages → „Deploy from a branch“ → Branch wählen → Ordner **/docs** → Save. Die Adresse lautet danach `https://<konto>.github.io/<repo>/`.
+- **Auf dem Handy:** Seite öffnen → „Zum Home-Bildschirm“ hinzufügen. Danach läuft sie auch ohne Empfang.
+- **Neue Saison / neue Gegner:** Workflow „Adler Autopilot“ → Run workflow mit Haken „Gegner-Wappen … exportieren“ (nur auf einem Entwicklungs-Branch) – schreibt `docs/teams.json` und `docs/crests/`. In `docs/sw.js` die `VERSION` erhöhen, damit Handys die neue Liste holen.
+- **Farbe/Design:** Konstanten oben in `docs/app.js` (`RED_CENTER`, `RED_EDGE`, `EAGLE_ALPHA`).
+
 ## Hinweise
 - Ankündigung: ab 3 Tage vor Anpfiff (ab 12 Uhr). Ergebnis: sobald der Endstand auf handball.net steht.
 - Doppelposts verhindert `state.json`.

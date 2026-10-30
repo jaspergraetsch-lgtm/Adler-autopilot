@@ -150,6 +150,18 @@ def fetch_ics():
     return games or None
 
 
+def normalize_crest(im, name=""):
+    """Wappen für den Generator: Randfehler weg, Hintergrund freistellen, zuschneiden, quadratisch 400 px."""
+    from PIL import Image
+    im = sp.clean_background(sp.strip_dark_edges(im), name)
+    box = im.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+    im = im.crop(box) if box else im
+    n = max(im.size)
+    sq = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    sq.paste(im, ((n - im.width) // 2, (n - im.height) // 2))
+    return sq.resize((400, 400), Image.LANCZOS)
+
+
 def export_crests(games, crest_map):
     """Wappen aller Gegner als saubere PNGs nach docs/crests/ + docs/teams.json (für den Ergebnis-Generator)."""
     import io
@@ -164,23 +176,22 @@ def export_crests(games, crest_map):
     out, missing = [], []
     for key, raw in sorted(teams.items(), key=lambda kv: nice(kv[1]).lower()):
         entry = {"name": nice(raw), "crest": None}
-        url = crest_map.get(key)
-        if url:
-            try:
-                r = requests.get(url, headers=UA, timeout=30)
+        try:
+            local = sp.LOCAL_FALLBACKS.get(raw.lower())       # saubere Repo-Wappen haben Vorrang
+            if local and local.exists():
+                im = Image.open(local)
+            elif crest_map.get(key):
+                r = requests.get(crest_map[key], headers=UA, timeout=30)
                 r.raise_for_status()
-                im = sp.clean_background(Image.open(io.BytesIO(r.content)), raw)
-                box = im.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
-                im = im.crop(box) if box else im
-                side_len = max(im.size)
-                sq = Image.new("RGBA", (side_len, side_len), (0, 0, 0, 0))
-                sq.paste(im, ((side_len - im.width) // 2, (side_len - im.height) // 2))
-                sq = sq.resize((400, 400), Image.LANCZOS)
+                im = Image.open(io.BytesIO(r.content))
+            else:
+                im = None
+            if im is not None:
                 rel = f"crests/{slug(raw)}.png"
-                sq.save(BASE / "docs" / rel)
+                normalize_crest(im, raw).save(BASE / "docs" / rel)
                 entry["crest"] = rel
-            except Exception as e:
-                log(f"WARN: Wappen {raw} nicht ladbar: {e}")
+        except Exception as e:
+            log(f"WARN: Wappen {raw} nicht ladbar: {e}")
         if not entry["crest"]:
             missing.append(raw)
         out.append(entry)

@@ -44,10 +44,12 @@
     background: var(--bg); color: var(--ink);
   }
   .seg button[aria-pressed=true] { background: var(--red); border-color: var(--red); color: #fff; }
-  .score { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .team { text-align: center; }
-  .team .nm { font-weight: 700; font-size: 15px; margin-bottom: 8px; min-height: 2.6em; display: flex; align-items: center; justify-content: center; }
-  .step { display: grid; grid-template-columns: 56px 1fr 56px; gap: 6px; align-items: center; }
+  .score { display: grid; gap: 12px; }
+  .team { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+  .team .nm { font-weight: 700; font-size: 17px; line-height: 1.2; overflow-wrap: break-word; }
+  .step { display: grid; grid-template-columns: 56px 84px 56px; gap: 6px; align-items: center; }
+  input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
   .step button {
     height: 56px; font-size: 30px; font-weight: 700; border-radius: 14px; border: 0;
     background: var(--bg); color: var(--ink); border: 1px solid var(--line);
@@ -128,14 +130,7 @@
   </section>
 
   <section>
-    <label for="head">Überschrift</label>
-    <select id="head">
-      <option value="schluss">Schlussspielstand</option>
-      <option value="abpfiff">Abpfiff</option>
-      <option value="sieg">Sieg!</option>
-      <option value="auto">Automatisch (Sieg / Unentschieden / Abpfiff)</option>
-    </select>
-    <div class="lab" style="margin-top:14px">Format</div>
+    <div class="lab">Format</div>
     <div class="seg">
       <button type="button" data-fmt="4:5" aria-pressed="true">Feed (4:5)</button>
       <button type="button" data-fmt="9:16" aria-pressed="false">Story (9:16)</button>
@@ -148,6 +143,18 @@
     <button class="btn" id="save" type="button">Speichern / Teilen</button>
     <button class="btn sec" id="download" type="button">Als Datei herunterladen</button>
   </div>
+  <details style="margin-top:14px">
+    <summary style="font-weight:700;padding:8px 0">Weitere Einstellungen</summary>
+    <section>
+      <label for="head">Überschrift</label>
+      <select id="head">
+        <option value="schluss">Schlussspielstand</option>
+        <option value="abpfiff">Abpfiff</option>
+        <option value="sieg">Sieg!</option>
+        <option value="auto">Automatisch (Sieg / Unentschieden / Abpfiff)</option>
+      </select>
+    </section>
+  </details>
   <p class="hint">„Speichern / Teilen“ öffnet das Teilen-Menü deines Handys – dort „Bild sichern“ oder direkt Instagram wählen. Du kannst die Seite zum Home-Bildschirm hinzufügen; sie funktioniert danach auch ohne Empfang in der Halle.</p>
 </main>
 

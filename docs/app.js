@@ -102,8 +102,9 @@
       ctx.font = `${size}px BC${style}`;
       if (ctx.measureText(str).width <= maxW) break;
     }
+    ctx.font = `${start}px BC${style}`;                    // Grundlinie nach Startgröße -> Namen stehen auf einer Linie
+    const asc = ctx.measureText(str).fontBoundingBoxAscent || start * 0.9;
     ctx.font = `${size}px BC${style}`;
-    const asc = ctx.measureText(str).fontBoundingBoxAscent || size * 0.9;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = color || '#fff';
