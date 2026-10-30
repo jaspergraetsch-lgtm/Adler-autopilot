@@ -106,6 +106,8 @@ def claude(system, user, max_tokens=1500):
               "messages": [{"role": "user", "content": user}]},
         timeout=90,
     )
+    if not r.ok:
+        print(f"Anthropic API {r.status_code}: {r.text[:500]}")
     r.raise_for_status()
     return "".join(b.get("text", "") for b in r.json()["content"])
 
