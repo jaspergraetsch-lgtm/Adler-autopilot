@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Adler Ergebnis-Generator</title>
+<meta name="theme-color" content="#c8102e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Ergebnis">
+<style>
+  @font-face { font-family: BCExtraBoldItalic; src: url(fonts/BarlowCondensed-ExtraBoldItalic.ttf); }
+  @font-face { font-family: BCBoldItalic; src: url(fonts/BarlowCondensed-BoldItalic.ttf); }
+  @font-face { font-family: BCMediumItalic; src: url(fonts/BarlowCondensed-MediumItalic.ttf); }
+
+  :root {
+    --red: #c8102e; --red-dark: #96000f; --ink: #141414; --muted: #5d5d63;
+    --bg: #f3f1f1; --card: #fff; --line: #dcd8d8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #f2f2f2; --muted: #b0b0b6; --bg: #151516; --card: #202022; --line: #38383b; }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 17px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom));
+  }
+  main { max-width: 520px; margin: 0 auto; }
+  h1 { font: 800 28px/1.1 system-ui, sans-serif; margin: 18px 0 4px; }
+  h1 span { color: var(--red); }
+  p.lead { margin: 0 0 16px; color: var(--muted); font-size: 15px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin-bottom: 12px; }
+  label, .lab { display: block; font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  select, input[type=number] {
+    width: 100%; min-height: 52px; font: inherit; font-size: 18px; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 0 12px;
+  }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .seg button {
+    min-height: 52px; font: inherit; font-weight: 700; border-radius: 12px; border: 2px solid var(--line);
+    background: var(--bg); color: var(--ink);
+  }
+  .seg button[aria-pressed=true] { background: var(--red); border-color: var(--red); color: #fff; }
+  .score { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .team { text-align: center; }
+  .team .nm { font-weight: 700; font-size: 15px; margin-bottom: 8px; min-height: 2.6em; display: flex; align-items: center; justify-content: center; }
+  .step { display: grid; grid-template-columns: 56px 1fr 56px; gap: 6px; align-items: center; }
+  .step button {
+    height: 56px; font-size: 30px; font-weight: 700; border-radius: 14px; border: 0;
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+  }
+  .step button:active { background: var(--red); color: #fff; }
+  .step input { text-align: center; font-size: 34px; font-weight: 800; min-height: 56px; padding: 0; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .row input[type=checkbox] { width: 26px; height: 26px; accent-color: var(--red); }
+  .ht { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  .ht input { text-align: center; font-weight: 700; }
+  .stage { background: #000; border-radius: 12px; overflow: hidden; margin: 4px 0 12px; }
+  canvas { display: block; width: 100%; height: auto; }
+  .btns { display: grid; gap: 10px; }
+  .btn {
+    min-height: 58px; font: inherit; font-size: 19px; font-weight: 800; border-radius: 14px; border: 0;
+    background: var(--red); color: #fff;
+  }
+  .btn.sec { background: var(--card); color: var(--ink); border: 2px solid var(--line); font-weight: 700; }
+  .btn:active { background: var(--red-dark); }
+  .hint { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  #loading { text-align: center; color: var(--muted); padding: 30px 0; }
+  #toast {
+    position: fixed; left: 16px; right: 16px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 5;
+    max-width: 488px; margin: 0 auto; background: #141414; color: #fff; padding: 14px 16px; border-radius: 12px; text-align: center;
+  }
+  #shot { position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.92); overflow: auto; padding: 16px; text-align: center; color: #fff; }
+  #shot img { max-width: 100%; max-height: 74vh; border-radius: 10px; margin: 8px 0; }
+  #shot button { min-height: 50px; padding: 0 28px; font: inherit; font-weight: 700; border-radius: 12px; border: 0; background: #fff; color: #000; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Schluss<span>spielstand</span></h1>
+  <p class="lead">Gegner und Tore wählen, Bild speichern – fertig.</p>
+
+  <div id="loading">Lade Wappen …</div>
+
+  <section>
+    <label for="opp">Gegner</label>
+    <select id="opp" aria-label="Gegner"></select>
+    <div class="lab" style="margin-top:14px">Wir spielen</div>
+    <div class="seg">
+      <button type="button" data-home="1" aria-pressed="true">Heim</button>
+      <button type="button" data-home="0" aria-pressed="false">Auswärts</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="lab">Endstand</div>
+    <div class="score">
+      <div class="team">
+        <div class="nm" id="usName">FT Adler Kiel</div>
+        <div class="step">
+          <button type="button" data-target="us" data-step="-1" aria-label="Adler minus ein Tor">−</button>
+          <input id="us" type="number" inputmode="numeric" min="0" max="99" value="0" aria-label="Tore FT Adler Kiel">
+          <button type="button" data-target="us" data-step="1" aria-label="Adler plus ein Tor">+</button>
+        </div>
+      </div>
+      <div class="team">
+        <div class="nm" id="oppName">Gegner</div>
+        <div class="step">
+          <button type="button" data-target="them" data-step="-1" aria-label="Gegner minus ein Tor">−</button>
+          <input id="them" type="number" inputmode="numeric" min="0" max="99" value="0" aria-label="Tore Gegner">
+          <button type="button" data-target="them" data-step="1" aria-label="Gegner plus ein Tor">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+      <input id="htOn" type="checkbox">
+      <label for="htOn" style="margin:0;text-transform:none;letter-spacing:0;font-size:16px;color:inherit">Halbzeitstand anzeigen</label>
+    </div>
+    <div class="ht" id="htBox" hidden>
+      <div><div class="lab">Adler (Halbzeit)</div><input id="htUs" type="number" inputmode="numeric" min="0" max="99" value="0"></div>
+      <div><div class="lab">Gegner (Halbzeit)</div><input id="htThem" type="number" inputmode="numeric" min="0" max="99" value="0"></div>
+    </div>
+  </section>
+
+  <section>
+    <label for="head">Überschrift</label>
+    <select id="head">
+      <option value="schluss">Schlussspielstand</option>
+      <option value="abpfiff">Abpfiff</option>
+      <option value="sieg">Sieg!</option>
+      <option value="auto">Automatisch (Sieg / Unentschieden / Abpfiff)</option>
+    </select>
+    <div class="lab" style="margin-top:14px">Format</div>
+    <div class="seg">
+      <button type="button" data-fmt="4:5" aria-pressed="true">Feed (4:5)</button>
+      <button type="button" data-fmt="9:16" aria-pressed="false">Story (9:16)</button>
+    </div>
+  </section>
+
+  <div class="stage"><canvas id="cv" width="1080" height="1350" aria-label="Vorschau"></canvas></div>
+
+  <div class="btns">
+    <button class="btn" id="save" type="button">Speichern / Teilen</button>
+    <button class="btn sec" id="download" type="button">Als Datei herunterladen</button>
+  </div>
+  <p class="hint">„Speichern / Teilen“ öffnet das Teilen-Menü deines Handys – dort „Bild sichern“ oder direkt Instagram wählen. Du kannst die Seite zum Home-Bildschirm hinzufügen; sie funktioniert danach auch ohne Empfang in der Halle.</p>
+</main>
+
+<div id="toast" hidden role="status"></div>
+<div id="shot" hidden>
+  <p>Bild gedrückt halten → „Zu Fotos hinzufügen“ bzw. „Bild speichern“.</p>
+  <img id="shotImg" alt="Fertiges Bild">
+  <div><button id="closeShot" type="button">Schließen</button></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
