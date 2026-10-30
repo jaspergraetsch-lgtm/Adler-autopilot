@@ -14,12 +14,19 @@ Aufruf:
   python bot.py --dry-run --fixture tests/games.json --now 2026-10-29T13:00
 """
 import argparse
+import email
+import email.header
+import email.utils
+import hashlib
+import imaplib
 import json
 import os
 import re
+import smtplib
 import subprocess
 import sys
 import time
+from email.message import EmailMessage
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -44,8 +51,12 @@ SOURCES = [u.strip() for u in os.getenv(
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 CHANNEL_HINT = os.getenv("BUFFER_CHANNEL", "adlerhandballmaedels").lower()
 HASHTAGS = os.getenv("HASHTAGS", "#handball #ftadlerkiel #kiel #handballdamen")
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")                         # Freigabe-Bot (BotFather)
-TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")                            # Chat/Gruppe der Prüferinnen
+MAIL_USER = os.getenv("MAIL_USER")                                 # Postfach des Bots (Absender + Antworten)
+MAIL_PASSWORD = os.getenv("MAIL_PASSWORD")
+MAIL_SMTP_HOST = os.getenv("MAIL_SMTP_HOST")
+MAIL_SMTP_PORT = int(os.getenv("MAIL_SMTP_PORT") or 465)           # 465 = SSL, 587 = STARTTLS
+MAIL_IMAP_HOST = os.getenv("MAIL_IMAP_HOST")
+APPROVERS = [a.strip().lower() for a in (os.getenv("MAIL_APPROVERS") or "").split(",") if a.strip()]
 UA = {"User-Agent": "Mozilla/5.0 (compatible; AdlerAutopilot/1.0)"}
 
 
@@ -259,6 +270,133 @@ def host_image(path):
     raise RuntimeError(f"Bild-URL nicht erreichbar: {url} (Repo muss öffentlich sein)")
 
 
+# --------------------------------------------------------------------------- Freigabe per Mail
+APPROVE_WORDS = {"ok", "okay", "ja", "freigeben", "freigabe", "passt", "gut", "super"}
+REJECT_WORDS = {"nein", "ablehnen", "abgelehnt", "stop", "stopp", "no"}
+KIND_LABEL = {"ankuendigung": "Ankündigung", "ergebnis": "Ergebnis"}
+
+
+def approval_configured():
+    return all([MAIL_USER, MAIL_PASSWORD, MAIL_SMTP_HOST, MAIL_IMAP_HOST, APPROVERS])
+
+
+def pending_id(kind, gid):
+    return hashlib.sha1(f"{kind}:{gid}".encode()).hexdigest()[:10]
+
+
+def send_mail(subject, body, attachment=None):
+    m = EmailMessage()
+    m["From"], m["To"], m["Subject"] = MAIL_USER, ", ".join(APPROVERS), subject
+    m.set_content(body)
+    if attachment:
+        m.add_attachment(Path(attachment).read_bytes(), maintype="image", subtype="png",
+                         filename=Path(attachment).name)
+    if MAIL_SMTP_PORT == 587:
+        with smtplib.SMTP(MAIL_SMTP_HOST, MAIL_SMTP_PORT, timeout=60) as s:
+            s.starttls()
+            s.login(MAIL_USER, MAIL_PASSWORD)
+            s.send_message(m)
+    else:
+        with smtplib.SMTP_SSL(MAIL_SMTP_HOST, MAIL_SMTP_PORT, timeout=60) as s:
+            s.login(MAIL_USER, MAIL_PASSWORD)
+            s.send_message(m)
+
+
+def request_approval(pid, kind, path, caption):
+    send_mail(
+        f"Freigabe [adler-{pid}] {KIND_LABEL[kind]}",
+        f"Neues Instagram-Posting für FT Adler Kiel ({KIND_LABEL[kind]}).\n"
+        f"Das Bild hängt an dieser Mail.\n\n--- Text ---\n{caption}\n------------\n\n"
+        "Bitte ANTWORTE auf diese Mail mit\n"
+        "  OK    – dann wird das Posting veröffentlicht\n"
+        "  NEIN  – dann wird nichts gepostet\n"
+        "in der ersten Zeile. Ohne Antwort wird nichts gepostet.",
+        attachment=path)
+
+
+def mail_text(msg):
+    parts = msg.walk() if msg.is_multipart() else [msg]
+    for part in parts:
+        if part.get_content_type() == "text/plain":
+            return (part.get_payload(decode=True) or b"").decode(part.get_content_charset() or "utf-8", "replace")
+    return ""
+
+
+def first_word(text):
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith(">"):         # zitierten Text überspringen
+            words = re.findall(r"[a-zäöüß]+", line.lower())
+            return words[0] if words else ""
+    return ""
+
+
+def read_replies(handle):
+    """Ungelesene Antworten auf Freigabe-Mails lesen. handle(pid, decision, sender) -> True, wenn erledigt."""
+    with imaplib.IMAP4_SSL(MAIL_IMAP_HOST) as im:
+        im.login(MAIL_USER, MAIL_PASSWORD)
+        im.select("INBOX")
+        _, data = im.search(None, "UNSEEN", "SUBJECT", '"[adler-"')
+        for num in data[0].split():
+            _, parts = im.fetch(num, "(BODY.PEEK[])")
+            msg = email.message_from_bytes(parts[0][1])
+            sender = email.utils.parseaddr(msg.get("From", ""))[1].lower()
+            m = re.search(r"\[adler-([0-9a-f]{10})\]", str(email.header.make_header(email.header.decode_header(msg.get("Subject", "")))))
+            if not m or sender not in APPROVERS:
+                continue                              # fremde Absender werden ignoriert und bleiben ungelesen
+            word = first_word(mail_text(msg))
+            decision = "ok" if word in APPROVE_WORDS else "nein" if word in REJECT_WORDS else None
+            if handle(m.group(1), decision, sender):
+                im.store(num, "+FLAGS", "\\Seen")
+
+
+def commit_state(st, label):
+    save_state(st)
+    subprocess.run(["git", "add", "state.json"], cwd=BASE, check=True)
+    subprocess.run(["git", "commit", "-m", label], cwd=BASE, check=False)
+    subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=BASE, check=False)
+    subprocess.run(["git", "push"], cwd=BASE, check=False)
+
+
+def finish_pending(st, pid):
+    p = st["pending"].pop(pid)
+    st["announced" if p["kind"] == "ankuendigung" else "reported"].append(p["gid"])
+    return p
+
+
+def process_approvals(st, now):
+    """Abgelaufene Entwürfe verwerfen, dann Antworten der Prüferinnen umsetzen."""
+    for pid, p in list(st["pending"].items()):
+        start = datetime.fromisoformat(p["start"]).replace(tzinfo=TZ)
+        if (start <= now) if p["kind"] == "ankuendigung" else (now - start > timedelta(days=3)):
+            finish_pending(st, pid)
+            log(f"[{p['kind']}] {p['gid']}: abgelaufen ohne Freigabe – nicht gepostet")
+            commit_state(st, f"State: {pid} abgelaufen")
+
+    def handle(pid, decision, sender):
+        p = st["pending"].get(pid)
+        if not p:
+            return True                               # schon erledigt (z. B. zweite Antwort)
+        if decision is None:
+            send_mail(f"Re: Freigabe [adler-{pid}] nicht verstanden",
+                      "Ich habe die Antwort nicht verstanden. Bitte antworte auf die ursprüngliche Mail mit OK oder NEIN "
+                      "in der ersten Zeile.")
+            return True
+        if decision == "ok":
+            post_id = create_post(find_channel(), p["caption"], p["image_url"], p["alt"])
+            log(f"[{p['kind']}] {p['gid']}: freigegeben von {sender} -> Buffer-Post {post_id}")
+            result = "freigegeben und an Buffer übergeben"
+        else:
+            log(f"[{p['kind']}] {p['gid']}: abgelehnt von {sender} – nicht gepostet")
+            result = "abgelehnt, es wird nichts gepostet"
+        finish_pending(st, pid)
+        commit_state(st, f"State {p['kind']} {p['gid']}")
+        send_mail(f"Erledigt [adler-{pid}] {KIND_LABEL[p['kind']]}", f"Das Posting wurde {result} (Antwort von {sender}).")
+        return True
+
+    read_replies(handle)
+
+
 # --------------------------------------------------------------------------- Hauptlogik
 def main():
     ap = argparse.ArgumentParser()
@@ -269,6 +407,10 @@ def main():
 
     now = datetime.fromisoformat(a.now).replace(tzinfo=TZ) if a.now else datetime.now(TZ)
     st = load_state()
+    if st["pending"] and not a.dry_run:
+        if not approval_configured():
+            sys.exit("Es warten Postings auf Freigabe, aber die Mail-Konfiguration fehlt – Abbruch (nichts gepostet).")
+        process_approvals(st, now)
     OUT_DIR.mkdir(exist_ok=True)
     POSTS_DIR.mkdir(exist_ok=True)
 
@@ -284,7 +426,6 @@ def main():
     if a.dry_run:
         (OUT_DIR / "games.json").write_text(json.dumps(games, indent=2, ensure_ascii=False))
 
-    channel = None
     todo = []
     for g in games:
         if not g.get("start") or not g.get("home") or not g.get("away"):
@@ -294,10 +435,12 @@ def main():
         days_to = (start.date() - now.date()).days
 
         if (g.get("status") == "upcoming" and start > now and days_to <= 3
-                and (days_to < 3 or now.hour >= 12) and gid not in st["announced"]):
+                and (days_to < 3 or now.hour >= 12) and gid not in st["announced"]
+                and pending_id("ankuendigung", gid) not in st["pending"]):
             todo.append(("ankuendigung", gid, g, start))
         if (g.get("status") == "finished" and g.get("goals_home") is not None and g.get("goals_away") is not None
-                and timedelta(0) < now - start < timedelta(days=3) and gid not in st["reported"]):
+                and timedelta(0) < now - start < timedelta(days=3) and gid not in st["reported"]
+                and pending_id("ergebnis", gid) not in st["pending"]):
             todo.append(("ergebnis", gid, g, start))
 
     log(f"{len(todo)} Posting(s) fällig")
@@ -327,18 +470,18 @@ def main():
             (OUT_DIR / f"{path.stem}.caption.txt").write_text(caption)
             (OUT_DIR / f"{path.stem}.mutation.graphql").write_text(payload)
             log("  --- Caption ---\n" + caption + "\n  ---------------")
+            log("  (im echten Lauf: Freigabe-Mail an die Prüferinnen, Posting erst nach OK)")
             continue
 
-        channel = channel or find_channel()
+        if not approval_configured():
+            sys.exit("Mail-Freigabe nicht konfiguriert (MAIL_USER, MAIL_PASSWORD, MAIL_SMTP_HOST, MAIL_IMAP_HOST, "
+                     "MAIL_APPROVERS) – Abbruch, es wird nichts ohne Freigabe gepostet.")
+        pid = pending_id(kind, gid)
         url = host_image(path)
-        post_id = create_post(channel, caption, url, alt)
-        log(f"  -> Buffer-Post {post_id}")
-        st["announced" if kind == "ankuendigung" else "reported"].append(gid)
-        save_state(st)
-        subprocess.run(["git", "add", "state.json"], cwd=BASE, check=True)
-        subprocess.run(["git", "commit", "-m", f"State {kind} {gid}"], cwd=BASE, check=False)
-        subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=BASE, check=False)
-        subprocess.run(["git", "push"], cwd=BASE, check=False)
+        request_approval(pid, kind, path, caption)
+        st["pending"][pid] = dict(kind=kind, gid=gid, start=start.isoformat(), caption=caption, alt=alt, image_url=url)
+        commit_state(st, f"State: {kind} {gid} wartet auf Freigabe")
+        log(f"  -> zur Freigabe an {', '.join(APPROVERS)} gesendet ({pid})")
 
 
 if __name__ == "__main__":
