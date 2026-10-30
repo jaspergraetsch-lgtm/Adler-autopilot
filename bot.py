@@ -289,6 +289,8 @@ def main():
         text, crest_map = fetch_sources()
         if not text.strip():
             sys.exit("Keine Seite ladbar – Abbruch (nichts gepostet).")
+        if a.dry_run:
+            log("--- Quelltext (gekürzt) ---\n" + text[:6000] + "\n---------------------------")
         games = extract_games(text, now)
     log(f"{len(games)} Spiel(e) erkannt")
     if a.dry_run:
