@@ -176,19 +176,36 @@ LOCAL_FALLBACKS = {"ft adler kiel": BASE / "shield.png",
                    "eckernförder mtv": BASE / "eckernfoerde.png"}
 
 
+def clean_background(im, name=""):
+    """Wappen ohne echte Transparenz mit einfarbig schwarzem Rand: Rand ab den Ecken transparent machen."""
+    im = im.convert("RGBA")
+    amin = im.getchannel("A").getextrema()[0]
+    corner = im.getpixel((0, 0))
+    print(f"  Wappen {name}: {im.size}, Alpha min {amin}, Ecke {corner}", flush=True)
+    if amin < 250 or max(corner[:3]) > 40:         # echte Transparenz oder kein schwarzer Rand
+        return im
+    rgb, sentinel = im.convert("RGB"), (255, 0, 255)
+    for pt in ((0, 0), (im.width - 1, 0), (0, im.height - 1), (im.width - 1, im.height - 1)):
+        if rgb.getpixel(pt)[0] < 60:
+            ImageDraw.floodfill(rgb, pt, sentinel, thresh=45)
+    mask = Image.eval(ImageChops.difference(rgb, Image.new("RGB", im.size, sentinel)).convert("L"), lambda v: 255 if v else 0)
+    im.putalpha(ImageChops.multiply(im.getchannel("A"), mask))
+    return im
+
+
 def load_crest(name, url=None):
     """Vereinswappen holen: Cache -> Download (Handball.net-Bildserver) -> lokale Datei -> Monogramm."""
     CREST_DIR.mkdir(parents=True, exist_ok=True)
     cache = CREST_DIR / (hashlib.md5((url or name).encode()).hexdigest() + ".img")
     if cache.exists():
-        return Image.open(cache).convert("RGBA")
+        return clean_background(Image.open(cache), name)
     if url:
         try:
             import requests
             r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
             r.raise_for_status()
             cache.write_bytes(r.content)
-            return Image.open(io.BytesIO(r.content)).convert("RGBA")
+            return clean_background(Image.open(io.BytesIO(r.content)), name)
         except Exception:
             pass
     fb = LOCAL_FALLBACKS.get(name.lower())
