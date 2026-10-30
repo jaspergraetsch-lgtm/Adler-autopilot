@@ -273,6 +273,9 @@ def host_image(path):
 # --------------------------------------------------------------------------- Freigabe per Mail
 APPROVE_WORDS = {"ok", "okay", "ja", "freigeben", "freigabe", "passt", "gut", "super"}
 REJECT_WORDS = {"nein", "ablehnen", "abgelehnt", "stop", "stopp", "no"}
+CHANGE_WORDS = {"ändern", "aendern", "korrigieren", "korrektur", "änderung"}
+MAX_CAPTION = 2200                                                  # Instagram-Limit
+REPLY_HEADER = re.compile(r"^(am .+ schrieb|on .+ wrote|von:|from:|-{3,}|_{3,})", re.I)
 KIND_LABEL = {"ankuendigung": "Ankündigung", "ergebnis": "Ergebnis"}
 
 
@@ -302,15 +305,18 @@ def send_mail(subject, body, attachment=None):
             s.send_message(m)
 
 
-def request_approval(pid, kind, path, caption):
+def request_approval(pid, rev, kind, path, caption):
+    again = f" – korrigierte Fassung {rev}" if rev else ""
     send_mail(
-        f"Freigabe [adler-{pid}] {KIND_LABEL[kind]}",
-        f"Neues Instagram-Posting für FT Adler Kiel ({KIND_LABEL[kind]}).\n"
+        f"Freigabe [adler-{pid}.{rev}] {KIND_LABEL[kind]}{again}",
+        f"Neues Instagram-Posting für FT Adler Kiel ({KIND_LABEL[kind]}{again}).\n"
         f"Das Bild hängt an dieser Mail.\n\n--- Text ---\n{caption}\n------------\n\n"
-        "Bitte ANTWORTE auf diese Mail mit\n"
-        "  OK    – dann wird das Posting veröffentlicht\n"
-        "  NEIN  – dann wird nichts gepostet\n"
-        "in der ersten Zeile. Ohne Antwort wird nichts gepostet.",
+        "Bitte ANTWORTE auf diese Mail, die erste Zeile entscheidet:\n"
+        "  OK       – das Posting wird veröffentlicht\n"
+        "  NEIN     – es wird nichts gepostet\n"
+        "  ÄNDERN   – darunter den kompletten neuen Text schreiben; du bekommst ihn\n"
+        "             zur Kontrolle noch einmal zugeschickt und bestätigst dann mit OK\n"
+        "Ohne Antwort wird nichts gepostet.",
         attachment=path)
 
 
@@ -322,17 +328,22 @@ def mail_text(msg):
     return ""
 
 
-def first_word(text):
+def parse_reply(text):
+    """Liefert (erstes Wort, Rest) der Antwort ohne zitierten Mailverlauf."""
+    lines = []
     for line in text.splitlines():
-        line = line.strip()
-        if line and not line.startswith(">"):         # zitierten Text überspringen
-            words = re.findall(r"[a-zäöüß]+", line.lower())
-            return words[0] if words else ""
-    return ""
+        stripped = line.strip()
+        if stripped.startswith(">") or REPLY_HEADER.match(stripped):
+            if lines:
+                break                                 # ab hier beginnt der zitierte Verlauf
+            continue                                  # Antwort steht unter dem Zitat
+        lines.append(line.rstrip())
+    m = re.match(r"([A-Za-zÄÖÜäöüß]+)[ \t]*:?[ \t]*(.*)", "\n".join(lines).strip(), re.S)
+    return (m.group(1).lower(), m.group(2).strip()) if m else ("", "")
 
 
 def read_replies(handle):
-    """Ungelesene Antworten auf Freigabe-Mails lesen. handle(pid, decision, sender) -> True, wenn erledigt."""
+    """Ungelesene Antworten auf Freigabe-Mails lesen. handle(pid, rev, decision, text, sender) -> True, wenn erledigt."""
     with imaplib.IMAP4_SSL(MAIL_IMAP_HOST) as im:
         im.login(MAIL_USER, MAIL_PASSWORD)
         im.select("INBOX")
@@ -341,12 +352,13 @@ def read_replies(handle):
             _, parts = im.fetch(num, "(BODY.PEEK[])")
             msg = email.message_from_bytes(parts[0][1])
             sender = email.utils.parseaddr(msg.get("From", ""))[1].lower()
-            m = re.search(r"\[adler-([0-9a-f]{10})\]", str(email.header.make_header(email.header.decode_header(msg.get("Subject", "")))))
+            m = re.search(r"\[adler-([0-9a-f]{10})(?:\.(\d+))?\]", str(email.header.make_header(email.header.decode_header(msg.get("Subject", "")))))
             if not m or sender not in APPROVERS:
                 continue                              # fremde Absender werden ignoriert und bleiben ungelesen
-            word = first_word(mail_text(msg))
-            decision = "ok" if word in APPROVE_WORDS else "nein" if word in REJECT_WORDS else None
-            if handle(m.group(1), decision, sender):
+            word, rest = parse_reply(mail_text(msg))
+            decision = ("ok" if word in APPROVE_WORDS else "nein" if word in REJECT_WORDS
+                        else "aendern" if word in CHANGE_WORDS else None)
+            if handle(m.group(1), int(m.group(2) or 0), decision, rest, sender):
                 im.store(num, "+FLAGS", "\\Seen")
 
 
@@ -373,14 +385,30 @@ def process_approvals(st, now):
             log(f"[{p['kind']}] {p['gid']}: abgelaufen ohne Freigabe – nicht gepostet")
             commit_state(st, f"State: {pid} abgelaufen")
 
-    def handle(pid, decision, sender):
+    def handle(pid, rev, decision, text, sender):
         p = st["pending"].get(pid)
         if not p:
             return True                               # schon erledigt (z. B. zweite Antwort)
+        if rev != p.get("rev", 0):
+            send_mail(f"Veraltete Freigabe-Antwort {KIND_LABEL[p['kind']]}",
+                      f"Die Antwort von {sender} bezog sich auf eine ältere Fassung und wurde ignoriert. "
+                      "Bitte auf die neueste Freigabe-Mail antworten.")
+            return True
         if decision is None:
-            send_mail(f"Re: Freigabe [adler-{pid}] nicht verstanden",
-                      "Ich habe die Antwort nicht verstanden. Bitte antworte auf die ursprüngliche Mail mit OK oder NEIN "
-                      "in der ersten Zeile.")
+            send_mail(f"Antwort nicht verstanden – {KIND_LABEL[p['kind']]}",
+                      "Ich habe die Antwort nicht verstanden. Bitte antworte auf die Freigabe-Mail mit OK, NEIN oder "
+                      "ÄNDERN (mit neuem Text darunter) in der ersten Zeile.")
+            return True
+        if decision == "aendern":
+            if not text or len(text) > MAX_CAPTION:
+                send_mail(f"Änderung nicht übernommen – {KIND_LABEL[p['kind']]}",
+                          f"Unter ÄNDERN muss der neue Text stehen (maximal {MAX_CAPTION} Zeichen). "
+                          "Es wurde nichts geändert und nichts gepostet.")
+                return True
+            p["caption"], p["rev"] = text, p.get("rev", 0) + 1
+            request_approval(pid, p["rev"], p["kind"], POSTS_DIR / p["fname"], text)
+            commit_state(st, f"State {p['kind']} {p['gid']}: Text geändert von {sender}")
+            log(f"[{p['kind']}] {p['gid']}: Text geändert von {sender} – erneut zur Freigabe gesendet")
             return True
         if decision == "ok":
             post_id = create_post(find_channel(), p["caption"], p["image_url"], p["alt"])
@@ -391,7 +419,7 @@ def process_approvals(st, now):
             result = "abgelehnt, es wird nichts gepostet"
         finish_pending(st, pid)
         commit_state(st, f"State {p['kind']} {p['gid']}")
-        send_mail(f"Erledigt [adler-{pid}] {KIND_LABEL[p['kind']]}", f"Das Posting wurde {result} (Antwort von {sender}).")
+        send_mail(f"Erledigt: {KIND_LABEL[p['kind']]}", f"Das Posting wurde {result} (Antwort von {sender}).")
         return True
 
     read_replies(handle)
@@ -478,8 +506,9 @@ def main():
                      "MAIL_APPROVERS) – Abbruch, es wird nichts ohne Freigabe gepostet.")
         pid = pending_id(kind, gid)
         url = host_image(path)
-        request_approval(pid, kind, path, caption)
-        st["pending"][pid] = dict(kind=kind, gid=gid, start=start.isoformat(), caption=caption, alt=alt, image_url=url)
+        request_approval(pid, 0, kind, path, caption)
+        st["pending"][pid] = dict(kind=kind, gid=gid, start=start.isoformat(), caption=caption, alt=alt,
+                                  image_url=url, fname=path.name, rev=0)
         commit_state(st, f"State: {kind} {gid} wartet auf Freigabe")
         log(f"  -> zur Freigabe an {', '.join(APPROVERS)} gesendet ({pid})")
 
