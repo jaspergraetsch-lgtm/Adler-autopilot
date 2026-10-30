@@ -1,0 +1,40 @@
+{
+  "teams": [
+    {
+      "name": "Eckernförder MTV",
+      "crest": "crests/eckernfoerder-mtv.png"
+    },
+    {
+      "name": "HSG Gettorf/Osdorf II",
+      "crest": "crests/hsg-gettorf-osdorf-ii.png"
+    },
+    {
+      "name": "MTV Dänischenhagen III",
+      "crest": "crests/mtv-daenischenhagen-iii.png"
+    },
+    {
+      "name": "SC Kieler Förde II",
+      "crest": "crests/sc-kieler-foerde-ii.png"
+    },
+    {
+      "name": "SG Bordesholm/Brügge II",
+      "crest": "crests/sg-bordesholm-bruegge-ii.png"
+    },
+    {
+      "name": "SG Handball Eidertal",
+      "crest": "crests/sg-handball-eidertal.png"
+    },
+    {
+      "name": "SG Handball Neumünster III",
+      "crest": "crests/sg-handball-neumuenster-iii.png"
+    },
+    {
+      "name": "Suchsdorfer SV III",
+      "crest": "crests/suchsdorfer-sv-iii.png"
+    },
+    {
+      "name": "TSV Altenholz",
+      "crest": "crests/tsv-altenholz.png"
+    }
+  ]
+}
