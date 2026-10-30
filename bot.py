@@ -150,6 +150,44 @@ def fetch_ics():
     return games or None
 
 
+def export_crests(games, crest_map):
+    """Wappen aller Gegner als saubere PNGs nach docs/crests/ + docs/teams.json (für den Ergebnis-Generator)."""
+    import io
+    from PIL import Image
+    outdir = BASE / "docs" / "crests"
+    outdir.mkdir(parents=True, exist_ok=True)
+    teams = {}
+    for g in games:
+        for side in ("home", "away"):
+            if TEAM_MATCH.upper() not in g[side].upper():
+                teams[g[side].upper()] = g[side]
+    out, missing = [], []
+    for key, raw in sorted(teams.items(), key=lambda kv: nice(kv[1]).lower()):
+        entry = {"name": nice(raw), "crest": None}
+        url = crest_map.get(key)
+        if url:
+            try:
+                r = requests.get(url, headers=UA, timeout=30)
+                r.raise_for_status()
+                im = sp.clean_background(Image.open(io.BytesIO(r.content)), raw)
+                box = im.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+                im = im.crop(box) if box else im
+                side_len = max(im.size)
+                sq = Image.new("RGBA", (side_len, side_len), (0, 0, 0, 0))
+                sq.paste(im, ((side_len - im.width) // 2, (side_len - im.height) // 2))
+                sq = sq.resize((400, 400), Image.LANCZOS)
+                rel = f"crests/{slug(raw)}.png"
+                sq.save(BASE / "docs" / rel)
+                entry["crest"] = rel
+            except Exception as e:
+                log(f"WARN: Wappen {raw} nicht ladbar: {e}")
+        if not entry["crest"]:
+            missing.append(raw)
+        out.append(entry)
+    (BASE / "docs" / "teams.json").write_text(json.dumps({"teams": out}, indent=2, ensure_ascii=False))
+    log(f"{len(out)} Gegner exportiert, ohne Wappen: {missing or 'keine'}")
+
+
 def claude(system, user, max_tokens=1500):
     key = os.getenv("ANTHROPIC_API_KEY")
     if not key:
@@ -196,7 +234,8 @@ def nice(name):
     """'ECKERNFÖRDER MTV' -> 'Eckernförder MTV' (kurze Wörter wie FT/MTV bleiben groß)."""
     if not name.isupper():
         return name
-    return " ".join(w if len(w) <= 3 else w.capitalize() for w in name.split(" "))
+    cap = lambda w: w if len(w) <= 3 else w.capitalize()
+    return " ".join("/".join(cap(p) for p in w.split("/")) for w in name.split(" "))
 
 
 def announcement_caption(g, start):
@@ -323,6 +362,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--fixture", help="JSON-Datei mit Spielen statt Handball.net (Test)")
     ap.add_argument("--now", help="Zeitpunkt simulieren, z. B. 2026-10-29T13:00")
+    ap.add_argument("--export-crests", action="store_true",
+                    help="Gegner-Wappen und Teamliste für den Generator nach docs/ schreiben")
     ap.add_argument("--plan-season", action="store_true",
                     help="alle offenen Ankündigungen vorab in Buffer einplanen (statt Ergebnisse/fällige Posts)")
     a = ap.parse_args()
@@ -345,6 +386,9 @@ def main():
         else:
             log("Spiele aus dem Kalender-Feed gelesen")
     log(f"{len(games)} Spiel(e) erkannt")
+    if a.export_crests:
+        export_crests(games, crest_map)
+        return
     if a.dry_run:
         (OUT_DIR / "games.json").write_text(json.dumps(games, indent=2, ensure_ascii=False))
 

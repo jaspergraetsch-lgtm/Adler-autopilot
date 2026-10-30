@@ -13,6 +13,10 @@ on:
         description: "Saison planen: alle offenen Ankündigungen in Buffer einplanen"
         type: boolean
         default: false
+      export_crests:
+        description: "Gegner-Wappen für den Ergebnis-Generator nach docs/ exportieren"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -38,6 +42,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ "${{ inputs.dry_run }}" = "true" ]; then args="$args --dry-run"; fi
             if [ "${{ inputs.plan_season }}" = "true" ]; then args="$args --plan-season"; fi
+            if [ "${{ inputs.export_crests }}" = "true" ]; then args="--export-crests"; fi
           fi
           python bot.py $args
       - name: Vorschau-Grafiken hochladen
@@ -56,6 +61,15 @@ jobs:
           git config user.email "autopilot@users.noreply.github.com"
           git add vorschau
           git commit -m "Vorschau-Grafiken" || exit 0
+          git pull --rebase --autostash
+          git push
+      - name: Wappen und Teamliste ablegen
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.export_crests && github.ref_name != 'main' }}
+        run: |
+          git config user.name "adler-autopilot"
+          git config user.email "autopilot@users.noreply.github.com"
+          git add docs
+          git commit -m "Gegner-Wappen und Teamliste" || exit 0
           git pull --rebase --autostash
           git push
 

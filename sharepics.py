@@ -177,17 +177,19 @@ LOCAL_FALLBACKS = {"ft adler kiel": BASE / "shield.png",
 
 
 def clean_background(im, name=""):
-    """Wappen ohne echte Transparenz mit einfarbig schwarzem Rand: Rand ab den Ecken transparent machen."""
+    """Wappen ohne echte Transparenz: einfarbigen Rand (schwarz, grau, weiß) ab den Ecken transparent machen."""
     im = im.convert("RGBA")
     amin = im.getchannel("A").getextrema()[0]
-    corner = im.getpixel((0, 0))
-    print(f"  Wappen {name}: {im.size}, Alpha min {amin}, Ecke {corner}", flush=True)
-    if amin < 250 or max(corner[:3]) > 40:         # echte Transparenz oder kein schwarzer Rand
+    corners = [(0, 0), (im.width - 1, 0), (0, im.height - 1), (im.width - 1, im.height - 1)]
+    cols = [im.getpixel(c)[:3] for c in corners]
+    print(f"  Wappen {name}: {im.size}, Alpha min {amin}, Ecken {cols}", flush=True)
+    bg = cols[0]
+    agree = all(sum(abs(a - b) for a, b in zip(c, bg)) <= 60 for c in cols)
+    if amin < 250 or not agree:                    # echte Transparenz oder kein einfarbiger Rand
         return im
     rgb, sentinel = im.convert("RGB"), (255, 0, 255)
-    for pt in ((0, 0), (im.width - 1, 0), (0, im.height - 1), (im.width - 1, im.height - 1)):
-        if rgb.getpixel(pt)[0] < 60:
-            ImageDraw.floodfill(rgb, pt, sentinel, thresh=45)
+    for pt in corners:
+        ImageDraw.floodfill(rgb, pt, sentinel, thresh=45)
     mask = Image.eval(ImageChops.difference(rgb, Image.new("RGB", im.size, sentinel)).convert("L"), lambda v: 255 if v else 0)
     im.putalpha(ImageChops.multiply(im.getchannel("A"), mask))
     return im
