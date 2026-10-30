@@ -196,6 +196,9 @@ def clean_background(im, name=""):
 def load_crest(name, url=None):
     """Vereinswappen holen: Cache -> Download (Handball.net-Bildserver) -> lokale Datei -> Monogramm."""
     CREST_DIR.mkdir(parents=True, exist_ok=True)
+    local = LOCAL_FALLBACKS.get(name.lower())          # saubere Repo-Wappen haben Vorrang vor dem Server-Bild
+    if local and local.exists():
+        return Image.open(local).convert("RGBA")
     cache = CREST_DIR / (hashlib.md5((url or name).encode()).hexdigest() + ".img")
     if cache.exists():
         return clean_background(Image.open(cache), name)
