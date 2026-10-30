@@ -388,12 +388,16 @@ def main():
         if kind == "ankuendigung":
             game.update(date=start, hall=g.get("hall") or "")
             sp.announcement(game, str(path), DESIGN, "4:5")
+            if a.dry_run:                            # Vorschau zusätzlich als Story (9:16)
+                sp.announcement(game, str(path.with_name(path.stem + "_story.png")), DESIGN, "9:16")
             caption = announcement_caption(g, start)
             alt = f"Ankündigung: {nice(g['home'])} gegen {nice(g['away'])} am {start.strftime('%d.%m.%Y')} um {start.strftime('%H:%M')} Uhr"
         else:
             game.update(goals_home=g["goals_home"], goals_away=g["goals_away"], halftime=g.get("halftime"),
                         us_home=TEAM_MATCH.upper() in g["home"].upper())
             sp.result(game, str(path), DESIGN, "4:5")
+            if a.dry_run:
+                sp.result(game, str(path.with_name(path.stem + "_story.png")), DESIGN, "9:16")
             caption = report_caption(g, start, a.dry_run)
             alt = f"Ergebnis: {nice(g['home'])} {g['goals_home']}:{g['goals_away']} {nice(g['away'])}"
         log(f"[{kind}] {gid}: Bild {path.name}")
