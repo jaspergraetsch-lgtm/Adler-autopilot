@@ -289,6 +289,13 @@ def main():
         text, crest_map = fetch_sources()
         if not text.strip():
             sys.exit("Keine Seite ladbar – Abbruch (nichts gepostet).")
+        if a.dry_run and os.getenv("HANDBALL_ICS"):      # Diagnose: Rohformat des Kalender-Feeds
+            try:
+                ics = requests.get(os.environ["HANDBALL_ICS"].replace("webcal://", "https://"), headers=UA, timeout=30)
+                log(f"--- ICS {ics.status_code}, {len(ics.text)} Zeichen, {ics.text.count('BEGIN:VEVENT')} Termine ---\n"
+                    + ics.text[:5000] + "\n---------------------------")
+            except Exception as e:
+                log(f"WARN: ICS nicht ladbar: {e}")
         if a.dry_run:
             log("--- Quelltext (gekürzt) ---\n" + text[:6000] + "\n---------------------------")
         games = extract_games(text, now)
