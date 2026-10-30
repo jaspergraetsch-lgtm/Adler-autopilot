@@ -44,6 +44,8 @@ SOURCES = [u.strip() for u in os.getenv(
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 CHANNEL_HINT = os.getenv("BUFFER_CHANNEL", "adlerhandballmaedels").lower()
 HASHTAGS = os.getenv("HASHTAGS", "#handball #ftadlerkiel #kiel #handballdamen")
+TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")                         # Freigabe-Bot (BotFather)
+TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")                            # Chat/Gruppe der Prüferinnen
 UA = {"User-Agent": "Mozilla/5.0 (compatible; AdlerAutopilot/1.0)"}
 
 
@@ -53,9 +55,12 @@ def log(*a):
 
 
 def load_state():
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text())
-    return {"announced": [], "reported": []}
+    st = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    st.setdefault("announced", [])
+    st.setdefault("reported", [])
+    st.setdefault("pending", {})       # auf Freigabe wartende Postings
+    st.setdefault("tg_offset", 0)      # bis wohin die Telegram-Antworten verarbeitet sind
+    return st
 
 
 def save_state(st):
