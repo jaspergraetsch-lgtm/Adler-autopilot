@@ -8,10 +8,23 @@ Läuft kostenlos in GitHub Actions: liest handball.net, baut die Sharepics, schr
    - `BUFFER_API_KEY` (Buffer: publish.buffer.com/settings/api → Generate API key)
    - `ANTHROPIC_API_KEY` (console.anthropic.com → API keys; Kosten ca. wenige Cent pro Monat)
 3. Actions-Tab → „Adler Autopilot“ → **Run workflow** (Haken „Nur testen“ lassen). Im Log siehst du erkannte Spiele, Captions, Bilder.
+   **Saison vorab planen:** Run workflow mit Haken „Saison planen“ (zuerst mit „Nur testen“, dann ohne) plant alle offenen Ankündigungen mit Datum in Buffer ein, standardmäßig 3 Tage vor dem Spiel um 12 Uhr (`ANNOUNCE_DAYS`, `ANNOUNCE_HOUR`). Du siehst und änderst sie im Buffer-Kalender. Der stündliche Lauf postet dann nur noch Ergebnisse (und Ankündigungen für später neu angesetzte Spiele) und markiert den Lauf als fehlgeschlagen – GitHub schickt dir dann eine Mail –, wenn sich Uhrzeit oder Halle eines geplanten Spiels geändert haben; den Buffer-Post musst du dann dort anpassen.
 4. Passt alles: noch einmal ausführen mit **entferntem** Haken. Ab dann läuft es stündlich von allein.
 
 ## Einstellungen (optional, als Repo-Variablen/Env im Workflow)
 `DESIGN` = dunkel | hell | linien · `HASHTAGS` · `BUFFER_CHANNEL` · `HANDBALL_URLS` (neue Saison: season_id anpassen)
+
+## Spielplan-Quelle
+Der Bot liest den Team-Kalender von handball.net (`HANDBALL_ICS`, im Workflow gesetzt; die Adresse steht unter „Termin abonnieren“, `webcal://` = `https://`). Daraus kommen alle Spiele der Saison mit Spielnummer, Halle und Ergebnis. Nur wenn der Feed nicht ladbar ist, liest Claude die Teamseiten als Rückfall. Hinweis: Der Feed kann Ergebnisse etwas verzögert liefern.
+
+Läufe mit „Nur testen“ legen die erzeugten Grafiken als Download **vorschau** an den Lauf (Actions → Lauf → Artifacts).
+
+## Ergebnis-Generator (Handy-Seite)
+Ordner `docs/` – eine eigenständige Seite, mit der Spielerinnen direkt nach dem Spiel die Schlussspielstand-Grafik (roter Hintergrund, Feed 4:5 oder Story 9:16) erstellen: Gegner im Dropdown wählen (alle Gegner der Saison, mit Wappen), Tore einstellen, „Speichern / Teilen“.
+- **Veröffentlichen:** Repo → Settings → Pages → „Deploy from a branch“ → Branch wählen → Ordner **/docs** → Save. Die Adresse lautet danach `https://<konto>.github.io/<repo>/`.
+- **Auf dem Handy:** Seite öffnen → „Zum Home-Bildschirm“ hinzufügen. Danach läuft sie auch ohne Empfang.
+- **Neue Saison / neue Gegner:** Workflow „Adler Autopilot“ → Run workflow mit Haken „Gegner-Wappen … exportieren“ (nur auf einem Entwicklungs-Branch) – schreibt `docs/teams.json` und `docs/crests/`. In `docs/sw.js` die `VERSION` erhöhen, damit Handys die neue Liste holen.
+- **Farbe/Design:** Konstanten oben in `docs/app.js` (`RED_CENTER`, `RED_EDGE`, `EAGLE_ALPHA`).
 
 ## Hinweise
 - Ankündigung: ab 3 Tage vor Anpfiff (ab 12 Uhr). Ergebnis: sobald der Endstand auf handball.net steht.

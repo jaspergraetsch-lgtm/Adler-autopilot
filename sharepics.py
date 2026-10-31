@@ -176,19 +176,59 @@ LOCAL_FALLBACKS = {"ft adler kiel": BASE / "shield.png",
                    "eckernförder mtv": BASE / "eckernfoerde.png"}
 
 
+def strip_dark_edges(im, max_frac=0.03):
+    """Schmale dunkle Randstreifen (Fehler im Quellbild) abschneiden, solange eine Außenzeile/-spalte fast ganz dunkel ist."""
+    im = im.convert("RGBA")
+    lim = max(1, int(max_frac * max(im.size)))
+    def dark(box):
+        px = [p for p in im.crop(box).getdata() if p[3] > 128]
+        n = (box[2] - box[0]) * (box[3] - box[1])
+        return len(px) > 0.8 * n and sum((p[0] * 299 + p[1] * 587 + p[2] * 114) // 1000 for p in px) / len(px) < 50
+    l, t, r, b = 0, 0, im.width, im.height
+    for _ in range(lim):
+        if r - l > 2 and dark((l, t, l + 1, b)): l += 1
+        elif r - l > 2 and dark((r - 1, t, r, b)): r -= 1
+        elif b - t > 2 and dark((l, t, r, t + 1)): t += 1
+        elif b - t > 2 and dark((l, b - 1, r, b)): b -= 1
+        else: break
+    return im.crop((l, t, r, b)) if (l, t, r, b) != (0, 0, im.width, im.height) else im
+
+
+def clean_background(im, name=""):
+    """Wappen ohne echte Transparenz: einfarbigen Rand (schwarz, grau, weiß) ab den Ecken transparent machen."""
+    im = im.convert("RGBA")
+    amin = im.getchannel("A").getextrema()[0]
+    corners = [(0, 0), (im.width - 1, 0), (0, im.height - 1), (im.width - 1, im.height - 1)]
+    cols = [im.getpixel(c)[:3] for c in corners]
+    print(f"  Wappen {name}: {im.size}, Alpha min {amin}, Ecken {cols}", flush=True)
+    bg = cols[0]
+    agree = all(sum(abs(a - b) for a, b in zip(c, bg)) <= 60 for c in cols)
+    if amin < 250 or not agree:                    # echte Transparenz oder kein einfarbiger Rand
+        return im
+    rgb, sentinel = im.convert("RGB"), (255, 0, 255)
+    for pt in corners:
+        ImageDraw.floodfill(rgb, pt, sentinel, thresh=45)
+    mask = Image.eval(ImageChops.difference(rgb, Image.new("RGB", im.size, sentinel)).convert("L"), lambda v: 255 if v else 0)
+    im.putalpha(ImageChops.multiply(im.getchannel("A"), mask))
+    return im
+
+
 def load_crest(name, url=None):
     """Vereinswappen holen: Cache -> Download (Handball.net-Bildserver) -> lokale Datei -> Monogramm."""
     CREST_DIR.mkdir(parents=True, exist_ok=True)
+    local = LOCAL_FALLBACKS.get(name.lower())          # saubere Repo-Wappen haben Vorrang vor dem Server-Bild
+    if local and local.exists():
+        return Image.open(local).convert("RGBA")
     cache = CREST_DIR / (hashlib.md5((url or name).encode()).hexdigest() + ".img")
     if cache.exists():
-        return Image.open(cache).convert("RGBA")
+        return clean_background(Image.open(cache), name)
     if url:
         try:
             import requests
             r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
             r.raise_for_status()
             cache.write_bytes(r.content)
-            return Image.open(io.BytesIO(r.content)).convert("RGBA")
+            return clean_background(Image.open(io.BytesIO(r.content)), name)
         except Exception:
             pass
     fb = LOCAL_FALLBACKS.get(name.lower())

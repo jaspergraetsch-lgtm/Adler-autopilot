@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -44,6 +45,8 @@ SOURCES = [u.strip() for u in os.getenv(
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 CHANNEL_HINT = os.getenv("BUFFER_CHANNEL", "adlerhandballmaedels").lower()
 HASHTAGS = os.getenv("HASHTAGS", "#handball #ftadlerkiel #kiel #handballdamen")
+ANNOUNCE_DAYS = int(os.getenv("ANNOUNCE_DAYS", 3))                 # Ankündigung so viele Tage vor dem Spiel ...
+ANNOUNCE_HOUR = int(os.getenv("ANNOUNCE_HOUR", 12))                # ... um diese Uhrzeit (Europe/Berlin)
 UA = {"User-Agent": "Mozilla/5.0 (compatible; AdlerAutopilot/1.0)"}
 
 
@@ -53,9 +56,11 @@ def log(*a):
 
 
 def load_state():
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text())
-    return {"announced": [], "reported": []}
+    st = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    st.setdefault("announced", [])
+    st.setdefault("reported", [])
+    st.setdefault("planned", {})       # vorab in Buffer eingeplante Ankündigungen: gid -> Termin/Halle/Post-ID
+    return st
 
 
 def save_state(st):
@@ -95,6 +100,105 @@ def fetch_sources():
     return "\n\n".join(texts), crests
 
 
+def parse_ics(text):
+    """Team-Kalender (.ics) von handball.net -> Spieleliste im Format von extract_games()."""
+    text = re.sub(r"\r?\n[ \t]", "", text)                      # gefaltete Zeilen zusammensetzen
+    unesc = lambda v: v.replace("\\n", "\n").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\")
+    games = []
+    for block in re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", text, re.S):
+        f = {}
+        for line in block.strip().splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                f[k.split(";")[0].upper()] = v
+        m = re.match(r"(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})", f.get("DTSTART", ""))
+        summary = unesc(f.get("SUMMARY", "")).strip()
+        score = re.search(r"\s*\((\d+):(\d+)\)$", summary)
+        teams = re.split(r"\s+-\s+", summary[:score.start()] if score else summary)
+        if not m or len(teams) != 2:
+            log(f"WARN: Kalendertermin nicht lesbar: {summary!r}")
+            continue
+        desc = unesc(f.get("DESCRIPTION", ""))
+        nr = re.search(r"Spielnummer\s+(\w+)", desc)
+        hall = unesc(f.get("LOCATION", "")).split(",")[0].strip()
+        finished = bool(score) or "finalizado" in desc.lower() or "beendet" in desc.lower()
+        games.append({
+            "id": nr.group(1) if nr else f.get("UID"),
+            "home": teams[0].strip(), "away": teams[1].strip(),
+            "start": f"{m[1]}-{m[2]}-{m[3]}T{m[4]}:{m[5]}",
+            "hall": hall or None,
+            "status": "finished" if finished else "upcoming",
+            "goals_home": int(score[1]) if score else None,
+            "goals_away": int(score[2]) if score else None,
+            "halftime": None,
+        })
+    return games
+
+
+def fetch_ics():
+    """Spiele aus HANDBALL_ICS laden; None, wenn nicht konfiguriert oder nicht ladbar."""
+    url = os.getenv("HANDBALL_ICS", "").replace("webcal://", "https://")
+    if not url:
+        return None
+    try:
+        r = requests.get(url, headers=UA, timeout=30)
+        r.raise_for_status()
+        games = parse_ics(r.text)
+    except Exception as e:
+        log(f"WARN: Kalender-Feed nicht ladbar ({e}) – weiche auf die Webseiten aus")
+        return None
+    return games or None
+
+
+def normalize_crest(im, name=""):
+    """Wappen für den Generator: Randfehler weg, Hintergrund freistellen, zuschneiden, quadratisch 400 px."""
+    from PIL import Image
+    im = sp.clean_background(sp.strip_dark_edges(im), name)
+    box = im.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+    im = im.crop(box) if box else im
+    n = max(im.size)
+    sq = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    sq.paste(im, ((n - im.width) // 2, (n - im.height) // 2))
+    return sq.resize((400, 400), Image.LANCZOS)
+
+
+def export_crests(games, crest_map):
+    """Wappen aller Gegner als saubere PNGs nach docs/crests/ + docs/teams.json (für den Ergebnis-Generator)."""
+    import io
+    from PIL import Image
+    outdir = BASE / "docs" / "crests"
+    outdir.mkdir(parents=True, exist_ok=True)
+    teams = {}
+    for g in games:
+        for side in ("home", "away"):
+            if TEAM_MATCH.upper() not in g[side].upper():
+                teams[g[side].upper()] = g[side]
+    out, missing = [], []
+    for key, raw in sorted(teams.items(), key=lambda kv: nice(kv[1]).lower()):
+        entry = {"name": nice(raw), "crest": None}
+        try:
+            local = sp.LOCAL_FALLBACKS.get(raw.lower())       # saubere Repo-Wappen haben Vorrang
+            if local and local.exists():
+                im = Image.open(local)
+            elif crest_map.get(key):
+                r = requests.get(crest_map[key], headers=UA, timeout=30)
+                r.raise_for_status()
+                im = Image.open(io.BytesIO(r.content))
+            else:
+                im = None
+            if im is not None:
+                rel = f"crests/{slug(raw)}.png"
+                normalize_crest(im, raw).save(BASE / "docs" / rel)
+                entry["crest"] = rel
+        except Exception as e:
+            log(f"WARN: Wappen {raw} nicht ladbar: {e}")
+        if not entry["crest"]:
+            missing.append(raw)
+        out.append(entry)
+    (BASE / "docs" / "teams.json").write_text(json.dumps({"teams": out}, indent=2, ensure_ascii=False))
+    log(f"{len(out)} Gegner exportiert, ohne Wappen: {missing or 'keine'}")
+
+
 def claude(system, user, max_tokens=1500):
     key = os.getenv("ANTHROPIC_API_KEY")
     if not key:
@@ -106,6 +210,8 @@ def claude(system, user, max_tokens=1500):
               "messages": [{"role": "user", "content": user}]},
         timeout=90,
     )
+    if not r.ok:
+        print(f"Anthropic API {r.status_code}: {r.text[:500]}")
     r.raise_for_status()
     return "".join(b.get("text", "") for b in r.json()["content"])
 
@@ -139,7 +245,8 @@ def nice(name):
     """'ECKERNFÖRDER MTV' -> 'Eckernförder MTV' (kurze Wörter wie FT/MTV bleiben groß)."""
     if not name.isupper():
         return name
-    return " ".join(w if len(w) <= 3 else w.capitalize() for w in name.split(" "))
+    cap = lambda w: w if len(w) <= 3 else w.capitalize()
+    return " ".join("/".join(cap(p) for p in w.split("/")) for w in name.split(" "))
 
 
 def announcement_caption(g, start):
@@ -223,8 +330,8 @@ def build_post_mutation(channel_id, text, image_url, alt, due_utc):
 }}"""
 
 
-def create_post(channel_id, text, image_url, alt):
-    due = datetime.now(timezone.utc) + timedelta(minutes=5)
+def create_post(channel_id, text, image_url, alt, due=None):
+    due = due or datetime.now(timezone.utc) + timedelta(minutes=5)
     res = gql(build_post_mutation(channel_id, text, image_url, alt, due))["createPost"]
     if "post" not in res:
         raise RuntimeError(f"Buffer lehnt ab: {res.get('message')}")
@@ -252,12 +359,24 @@ def host_image(path):
     raise RuntimeError(f"Bild-URL nicht erreichbar: {url} (Repo muss öffentlich sein)")
 
 
+def commit_state(st, label):
+    save_state(st)
+    subprocess.run(["git", "add", "state.json"], cwd=BASE, check=True)
+    subprocess.run(["git", "commit", "-m", label], cwd=BASE, check=False)
+    subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=BASE, check=False)
+    subprocess.run(["git", "push"], cwd=BASE, check=False)
+
+
 # --------------------------------------------------------------------------- Hauptlogik
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--fixture", help="JSON-Datei mit Spielen statt Handball.net (Test)")
     ap.add_argument("--now", help="Zeitpunkt simulieren, z. B. 2026-10-29T13:00")
+    ap.add_argument("--export-crests", action="store_true",
+                    help="Gegner-Wappen und Teamliste für den Generator nach docs/ schreiben")
+    ap.add_argument("--plan-season", action="store_true",
+                    help="alle offenen Ankündigungen vorab in Buffer einplanen (statt Ergebnisse/fällige Posts)")
     a = ap.parse_args()
 
     now = datetime.fromisoformat(a.now).replace(tzinfo=TZ) if a.now else datetime.now(TZ)
@@ -269,25 +388,45 @@ def main():
     if a.fixture:
         games = json.loads(Path(a.fixture).read_text())
     else:
-        text, crest_map = fetch_sources()
-        if not text.strip():
+        text, crest_map = fetch_sources()             # Webseiten: Wappen-URLs (und Rückfall für die Spiele)
+        games = fetch_ics()
+        if games is None and not text.strip():
             sys.exit("Keine Seite ladbar – Abbruch (nichts gepostet).")
-        games = extract_games(text, now)
+        if games is None:
+            games = extract_games(text, now)
+        else:
+            log("Spiele aus dem Kalender-Feed gelesen")
     log(f"{len(games)} Spiel(e) erkannt")
+    if a.export_crests:
+        export_crests(games, crest_map)
+        return
     if a.dry_run:
         (OUT_DIR / "games.json").write_text(json.dumps(games, indent=2, ensure_ascii=False))
 
     channel = None
     todo = []
+    alerts = []
     for g in games:
         if not g.get("start") or not g.get("home") or not g.get("away"):
             continue
         start = datetime.fromisoformat(g["start"]).replace(tzinfo=TZ)
         gid = g.get("id") or f"{g['start']}-{slug(g['home'])}-{slug(g['away'])}"
         days_to = (start.date() - now.date()).days
+        planned = st["planned"].get(gid)
 
+        if planned and g.get("status") == "upcoming" and start > now:      # Termin/Halle seit der Planung geändert?
+            seen = [g["start"], g.get("hall") or ""]
+            if seen != [planned["start"], planned.get("hall") or ""] and planned.get("alerted") != seen:
+                alerts.append(f"{nice(g['home'])} – {nice(g['away'])}: geplant {planned['start']} / {planned.get('hall') or '-'}, "
+                              f"jetzt {seen[0]} / {seen[1] or '-'} – Buffer-Post {planned['post_id']} bitte prüfen/anpassen")
+                planned["alerted"] = seen
+
+        if a.plan_season:
+            if g.get("status") == "upcoming" and start > now and gid not in st["announced"] and not planned:
+                todo.append(("ankuendigung", gid, g, start))
+            continue
         if (g.get("status") == "upcoming" and start > now and days_to <= 3
-                and (days_to < 3 or now.hour >= 12) and gid not in st["announced"]):
+                and (days_to < 3 or now.hour >= 12) and gid not in st["announced"] and not planned):
             todo.append(("ankuendigung", gid, g, start))
         if (g.get("status") == "finished" and g.get("goals_home") is not None and g.get("goals_away") is not None
                 and timedelta(0) < now - start < timedelta(days=3) and gid not in st["reported"]):
@@ -304,34 +443,52 @@ def main():
         if kind == "ankuendigung":
             game.update(date=start, hall=g.get("hall") or "")
             sp.announcement(game, str(path), DESIGN, "4:5")
+            if a.dry_run:                            # Vorschau zusätzlich als Story (9:16)
+                sp.announcement(game, str(path.with_name(path.stem + "_story.png")), DESIGN, "9:16")
             caption = announcement_caption(g, start)
             alt = f"Ankündigung: {nice(g['home'])} gegen {nice(g['away'])} am {start.strftime('%d.%m.%Y')} um {start.strftime('%H:%M')} Uhr"
         else:
             game.update(goals_home=g["goals_home"], goals_away=g["goals_away"], halftime=g.get("halftime"),
                         us_home=TEAM_MATCH.upper() in g["home"].upper())
             sp.result(game, str(path), DESIGN, "4:5")
+            if a.dry_run:
+                sp.result(game, str(path.with_name(path.stem + "_story.png")), DESIGN, "9:16")
             caption = report_caption(g, start, a.dry_run)
             alt = f"Ergebnis: {nice(g['home'])} {g['goals_home']}:{g['goals_away']} {nice(g['away'])}"
         log(f"[{kind}] {gid}: Bild {path.name}")
 
+        due = None                                    # None = sofort (in 5 Minuten)
+        if a.plan_season:
+            due = datetime.combine(start.date() - timedelta(days=ANNOUNCE_DAYS), dtime(ANNOUNCE_HOUR), TZ)
+            due = (due if due > now + timedelta(minutes=5) else now + timedelta(minutes=5)).astimezone(timezone.utc)
+
         if a.dry_run:
             payload = build_post_mutation("CHANNEL_ID", caption, f"https://raw.githubusercontent.com/OWNER/REPO/main/posts/{fname}",
-                                          alt, now.astimezone(timezone.utc) + timedelta(minutes=5))
+                                          alt, due or now.astimezone(timezone.utc) + timedelta(minutes=5))
             (OUT_DIR / f"{path.stem}.caption.txt").write_text(caption)
             (OUT_DIR / f"{path.stem}.mutation.graphql").write_text(payload)
             log("  --- Caption ---\n" + caption + "\n  ---------------")
+            if due:
+                log(f"  Veröffentlichung geplant: {due.astimezone(TZ).strftime('%a %d.%m.%Y %H:%M')} Uhr")
             continue
 
         channel = channel or find_channel()
         url = host_image(path)
-        post_id = create_post(channel, caption, url, alt)
-        log(f"  -> Buffer-Post {post_id}")
-        st["announced" if kind == "ankuendigung" else "reported"].append(gid)
-        save_state(st)
-        subprocess.run(["git", "add", "state.json"], cwd=BASE, check=True)
-        subprocess.run(["git", "commit", "-m", f"State {kind} {gid}"], cwd=BASE, check=False)
-        subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=BASE, check=False)
-        subprocess.run(["git", "push"], cwd=BASE, check=False)
+        post_id = create_post(channel, caption, url, alt, due)
+        log(f"  -> Buffer-Post {post_id}" + (f" für {due.astimezone(TZ).strftime('%d.%m.%Y %H:%M')} Uhr geplant" if due else ""))
+        if a.plan_season:
+            st["planned"][gid] = {"post_id": post_id, "start": g["start"], "hall": g.get("hall") or "",
+                                  "due": due.isoformat()}
+        else:
+            st["announced" if kind == "ankuendigung" else "reported"].append(gid)
+        commit_state(st, f"State {kind} {gid}")
+
+    for msg in alerts:
+        log("ACHTUNG Spielverlegung: " + msg)
+    if alerts and not a.dry_run:
+        commit_state(st, "State: Verlegung gemeldet")
+        sys.exit("Spieltermin/Halle hat sich geändert (siehe oben) – Lauf bewusst als fehlgeschlagen markiert, "
+                 "damit GitHub eine Benachrichtigung schickt.")
 
 
 if __name__ == "__main__":
